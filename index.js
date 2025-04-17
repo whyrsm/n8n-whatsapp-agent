@@ -1,10 +1,21 @@
 import pkg from 'whatsapp-web.js';
 const { Client, LocalAuth } = pkg;
-import qrcode from 'qrcode-terminal';
 import express from 'express';
 import fetch from 'node-fetch';
 import https from 'https';
+import { WebSocketServer } from 'ws';
+import { createServer } from 'http';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
+
 const app = express();
+const server = createServer(app);
+const wss = new WebSocketServer({ server });
+
+// Set up static file serving
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+app.use(express.static(join(__dirname, 'public')));
 
 // Configure fetch agent with proper SSL handling
 const agent = new https.Agent({
@@ -18,6 +29,75 @@ const agent = new https.Agent({
 // Configure express to parse JSON
 app.use(express.json());
 
+// Reset endpoint to destroy the current session and clean up auth files
+app.post('/reset', async (req, res) => {
+    try {
+        // Destroy the client session and disconnect from WhatsApp
+        if (client) {
+            await client.destroy();
+            console.log('WhatsApp client destroyed');
+        }
+
+        // Notify all connected WebSocket clients about the reset
+        wss.clients.forEach((wsClient) => {
+            wsClient.send(JSON.stringify({ 
+                type: 'status', 
+                message: 'Resetting WhatsApp session...'
+            }));
+        });
+
+        // Create a new client instance with fresh authentication
+        const newClient = new Client({
+            authStrategy: new LocalAuth(),
+            puppeteer: {
+                headless: true,
+                args: ['--no-sandbox']
+            }
+        });
+
+        // Set up event handlers for the new client
+        newClient.on('qr', (qr) => {
+            console.log('New QR Code received');
+            wss.clients.forEach((wsClient) => {
+                wsClient.send(JSON.stringify({ type: 'qr', qr }));
+            });
+        });
+
+        newClient.on('ready', () => {
+            console.log('New client is ready!');
+            wss.clients.forEach((wsClient) => {
+                wsClient.send(JSON.stringify({ type: 'ready' }));
+            });
+        });
+
+        // Initialize the new client
+        await newClient.initialize();
+        
+        // Update the global client reference
+        client = newClient;
+
+        res.json({ 
+            success: true, 
+            message: 'WhatsApp session reset successfully. Please scan the new QR code.'
+        });
+
+    } catch (error) {
+        console.error('Error resetting session:', error);
+        // Notify WebSocket clients about the error
+        wss.clients.forEach((wsClient) => {
+            wsClient.send(JSON.stringify({ 
+                type: 'error', 
+                message: 'Failed to reset WhatsApp session. Please try again.'
+            }));
+        });
+        res.status(500).json({ 
+            success: false, 
+            message: 'Failed to reset WhatsApp session',
+            error: error.message 
+        });
+    }
+});
+
 // Initialize WhatsApp client
 const client = new Client({
     authStrategy: new LocalAuth(),
@@ -27,10 +107,20 @@ const client = new Client({
     }
 });
 
-// Generate QR code for WhatsApp Web authentication
-client.on('qr', (qr) => {
-    console.log('Scan the QR code below to login to WhatsApp Web:');
-    qrcode.generate(qr, { small: true });
+// Handle WebSocket connections
+wss.on('connection', (ws) => {
+    console.log('New WebSocket connection');
+    
+    // Send QR code to connected clients
+    client.on('qr', (qr) => {
+        console.log('QR Code received');
+        ws.send(JSON.stringify({ type: 'qr', qr }));
+    });
+
+    // Send ready status to connected clients
+    client.on('ready', () => {
+        ws.send(JSON.stringify({ type: 'ready' }));
+    });
 });
 
 // Handle client ready event
@@ -96,9 +186,6 @@ client.on('message', async msg => {
     }
 });
 
-// Initialize WhatsApp client
-client.initialize();
-
 // API endpoint for sending messages (can be triggered from n8n)
 app.post('/send-message', async (req, res) => {
     try {
@@ -111,8 +198,10 @@ app.post('/send-message', async (req, res) => {
     }
 });
 
-// Start express server
+// Initialize WhatsApp client and start server
+client.initialize();
+
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-    console.log(`Server is running on port ${PORT}`);
+server.listen(PORT, () => {
+    console.log(`Server is running on port ${PORT}. Open http://localhost:${PORT} to scan QR code.`);
 });

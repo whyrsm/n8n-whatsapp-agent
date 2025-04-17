@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WhatsApp QR Code Scanner</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+            background-color: #f0f2f5;
+        }
+        .container {
+            text-align: center;
+            background: white;
+            padding: 2rem;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+        }
+        #qrcode {
+            margin: 2rem 0;
+        }
+        .status {
+            margin-top: 1rem;
+            padding: 0.5rem;
+            border-radius: 5px;
+        }
+        .connected {
+            background-color: #e7f3ff;
+            color: #0066cc;
+        }
+        .error {
+            background-color: #ffe7e7;
+            color: #cc0000;
+        }
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>WhatsApp QR Code Scanner</h1>
+        <div id="qrcode"></div>
+        <div id="status" class="status">Waiting for QR code...</div>
+        <button id="resetButton" onclick="resetSession()" style="margin-top: 1rem; padding: 0.5rem 1rem; background-color: #dc3545; color: white; border: none; border-radius: 5px; cursor: pointer;">Reset Session</button>
+    </div>
+    <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.0/build/qrcode.min.js"></script>
+    <script>
+        const socket = new WebSocket(`ws://${window.location.host}`);
+        const qrcodeDiv = document.getElementById('qrcode');
+        const statusDiv = document.getElementById('status');
+
+
+
+        socket.onmessage = function(event) {
+            const data = JSON.parse(event.data);
+            
+            if (data.type === 'qr') {
+                qrcodeDiv.innerHTML = '';
+                QRCode.toCanvas(qrcodeDiv, data.qr, function (error) {
+                    if (error) console.error(error);
+                });
+                statusDiv.textContent = 'Scan this QR code with WhatsApp';
+                statusDiv.className = 'status';
+            } else if (data.type === 'ready') {
+                qrcodeDiv.innerHTML = '';
+                statusDiv.textContent = 'WhatsApp Connected!';
+                statusDiv.className = 'status connected';
+            } else if (data.type === 'status') {
+                statusDiv.textContent = data.message;
+                statusDiv.className = 'status';
+            } else if (data.type === 'error') {
+                statusDiv.textContent = data.message;
+                statusDiv.className = 'status error';
+            }
+        };
+
+        socket.onclose = function() {
+            statusDiv.textContent = 'Connection lost. Please refresh the page.';
+            statusDiv.className = 'status';
+        };
+
+        async function resetSession() {
+            try {
+                const response = await fetch('/reset', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+                
+                if (!response.ok) {
+                    throw new Error('Failed to reset session');
+                }
+                
+                statusDiv.textContent = 'Session reset successfully. Waiting for new QR code...';
+                statusDiv.className = 'status';
+                qrcodeDiv.innerHTML = '';
+            } catch (error) {
+                console.error('Error resetting session:', error);
+                statusDiv.textContent = 'Failed to reset session. Please try again.';
+                statusDiv.className = 'status';
+            }
+        }
+    </script>
+</body>
+</html>
